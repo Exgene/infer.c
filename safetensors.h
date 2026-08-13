@@ -27,15 +27,14 @@ typedef struct {
   WeightsMetaDataVec tensors;
 } SafeTensors;
 
-void vec_init(WeightsMetaDataVec *v);
-int vec_push(WeightsMetaDataVec *v, WeightsMetaData item);
-void vec_free(WeightsMetaDataVec *v);
+void vec_init(WeightsMetaDataVec *);
+int vec_push(WeightsMetaDataVec *, WeightsMetaData);
+void vec_free(WeightsMetaDataVec *);
 
-int safetensors_open(const char *path, SafeTensors *out);
-void safetensors_close(SafeTensors *st);
+int safetensors_open(const char *, SafeTensors *);
+void safetensors_close(SafeTensors *);
 
-const WeightsMetaData *safetensors_find(const SafeTensors *st,
-                                        const char *name);
-const void *safetensors_ptr(const SafeTensors *st, const WeightsMetaData *md);
+const WeightsMetaData *safetensors_find(const SafeTensors *, const char *);
+const void *safetensors_ptr(const SafeTensors *, const WeightsMetaData *);
 
 #endif
