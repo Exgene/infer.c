@@ -1,3 +1,6 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
 #include "json.h"
 #include "stdbool.h"
 
@@ -14,3 +17,5 @@ static int json_get_int(struct json, const char *, int *);
 static int json_get_float(struct json, const char *, float *);
 
 int load_config_json(const char *, WeightsConfigJson *);
+
+#endif
