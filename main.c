@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "safetensors.h"
+#include "weights.h"
 
 const char *LOCATION = "./models/llama-3.2-1B-instruct/model.safetensors";
 const char *CONFIG_LOCATION = "./models/llama-3.2-1B-instruct/config.json";
@@ -43,6 +44,12 @@ int main(int argc, char *argv[]) {
            (unsigned long long)(emb->offset[1] - emb->offset[0]), emb->dtype);
   } else {
     fprintf(stderr, "model.embed_tokens.weight not found\n");
+  }
+
+  Weights w;
+  int error = bind_weights(&st, &config, &w);
+  if (error) {
+    return EXIT_FAILURE;
   }
 
   safetensors_close(&st);
