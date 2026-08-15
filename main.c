@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "config.h"
+#include "ops.h"
 #include "safetensors.h"
 #include "weights.h"
 
@@ -51,6 +52,15 @@ int main(int argc, char *argv[]) {
   if (error) {
     return EXIT_FAILURE;
   }
+
+  float *x = malloc(config.hidden_size * sizeof(float));
+  float *xn = malloc(config.hidden_size * sizeof(float));
+  float *logits = malloc(config.vocab_size * sizeof(float));
+
+  lookup(x, w.token_emb, 100, config.hidden_size);
+  printf("x:%f", x[0]);
+  rmsnorm(xn, x, w.layers[0].rms_att, config.hidden_size, config.rms_norm_eps);
+  printf("xn:%f", xn[0]);
 
   safetensors_close(&st);
   return EXIT_SUCCESS;
