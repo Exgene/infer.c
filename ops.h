@@ -14,4 +14,6 @@ void matvec(float *y, const uint16_t *W, const float *x, int out, int in);
 
 void add(float *x, const float *branch, int n);
 
+void silu(float *x, int n);
+
 #endif

@@ -54,13 +54,16 @@ int main(int argc, char *argv[]) {
   }
 
   float *x = malloc(config.hidden_size * sizeof(float));
+  float *q = malloc(config.hidden_size * sizeof(float));
   float *xn = malloc(config.hidden_size * sizeof(float));
   float *logits = malloc(config.vocab_size * sizeof(float));
 
   lookup(x, w.token_emb, 100, config.hidden_size);
-  printf("x:%f", x[0]);
+  printf("x:%f\n", x[0]);
   rmsnorm(xn, x, w.layers[0].rms_att, config.hidden_size, config.rms_norm_eps);
-  printf("xn:%f", xn[0]);
+  printf("xn:%f\n", xn[0]);
+  matvec(q, w.layers[0].wq, xn, config.hidden_size, config.hidden_size);
+  printf("y:%f\n", q[0]);
 
   safetensors_close(&st);
   return EXIT_SUCCESS;

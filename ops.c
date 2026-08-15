@@ -1,4 +1,5 @@
 #include "ops.h"
+#include <cmath>
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
@@ -51,5 +52,30 @@ void matvec(float *y, const uint16_t *W, const float *x, int out, int in) {
 void add(float *x, const float *branch, int n) {
   for (int i = 0; i < n; i++) {
     x[i] += branch[i];
+  }
+}
+
+void silu(float *x, int n) {
+  for (int i = 0; i < n; i++) {
+    float z = x[i];
+    x[i] = z / (1 + expf(z));
+  }
+}
+
+void softmax(float *x, int n) {
+  float max = x[0];
+  for (int i = 1; i < n; i++) {
+    if (x[i] > max)
+      max = x[i];
+  }
+
+  float sum = 0.0f;
+  for (int i = 0; i < n; i++) {
+    x[i] = expf(x[i] - max);
+    sum += x[i];
+  }
+
+  for (int i = 0; i < n; i++) {
+    x[i] /= sum;
   }
 }
