@@ -66,17 +66,38 @@ int main(int argc, char *argv[]) {
   float *hb = malloc(config.intermediate_size * sizeof(float));
   float *hb2 = malloc(config.intermediate_size * sizeof(float));
 
-  int token_id = config.bos_id;
+  const int max_seq = 32;
+  int kv_dim = config.num_kv_heads * config.head_dim;
+  float *k_cache = malloc((size_t)config.num_layers * max_seq * kv_dim *
+                          sizeof(float));
+  float *v_cache = malloc((size_t)config.num_layers * max_seq * kv_dim *
+                          sizeof(float));
 
-  int next =
-      forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, token_id);
-  printf("Next Token: %d", next);
+  int tokens[32] = {0};
+  int n = 0;
+  tokens[n++] = config.bos_id;
+  int next = 0;
 
-  // lookup(x, w.token_emb, 100, config.hidden_size);
-  // printf("x:%f\n", x[0]);
-  // rmsnorm(xn, x, w.layers[0].rms_att, config.hidden_size,
-  // config.rms_norm_eps); printf("xn:%f\n", xn[0]); matvec(q, w.layers[0].wq,
-  // xn, config.hidden_size, config.hidden_size); printf("y:%f\n", q[0]);
+  fprintf(stderr, "running first forward (this can take a while)...\n");
+  for (int pos = 0; pos < n; pos++) {
+    next = forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits,
+                   tokens[pos], pos, k_cache, v_cache, max_seq);
+  }
+  for (;;) {
+    printf("%d ", next);
+    fflush(stdout);
+    int eos = 0;
+    for (int i = 0; i < config.num_eos; i++)
+      if (next == config.eos_ids[i])
+        eos = 1;
+    if (eos || n >= max_seq)
+      break;
+    tokens[n] = next;
+    next = forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits,
+                   tokens[n], n, k_cache, v_cache, max_seq);
+    n++;
+  }
+  printf("\n");
 
   safetensors_close(&st);
   return EXIT_SUCCESS;

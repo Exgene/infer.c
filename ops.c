@@ -1,6 +1,7 @@
 #include "ops.h"
 #include "config.h"
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,22 @@ float bf16_to_float32(uint16_t in) {
   float out;
   memcpy(&out, &t, sizeof(out));
   return out;
+}
+
+void rope_rotation(float *x, int position, int head_dim, float rope_theta) {
+  for (int i = 0; i < head_dim; i += 2) {
+    float freq = 1.0f / powf(rope_theta, (float)i / head_dim);
+    float theta = position * freq;
+
+    float c = cosf(theta);
+    float s = sinf(theta);
+
+    float x0 = x[i];
+    float x1 = x[i + 1];
+
+    x[i] = x0 * c - x1 * s;
+    x[i + 1] = x0 * s + x1 * c;
+  }
 }
 
 void lookup(float *x, const uint16_t *token_emb, int token_id, int hidden) {
@@ -124,9 +141,19 @@ void attention(float *out, const float *q, const float *k, const float *v,
   free(score);
 }
 
+static float *cache_slot(float *cache, int layer, int pos, int max_seq,
+                         int kv_dim) {
+  return cache + ((size_t)layer * max_seq + pos) * kv_dim;
+}
+
+static float *cache_layer(float *cache, int layer, int max_seq, int kv_dim) {
+  return cache + (size_t)layer * max_seq * kv_dim;
+}
+
 int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
             float *q, float *k, float *v, float *attn, float *hb, float *hb2,
-            float *logits, int token_id) {
+            float *logits, int token_id, int pos, float *k_cache,
+            float *v_cache, int max_seq) {
   // to avoid pointer inderection take once and use multiple times!
   int hidden = cfg->hidden_size;
   int num_layers = cfg->num_layers;
@@ -137,6 +164,7 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
   int num_heads = cfg->num_heads;
   int intermediate = cfg->intermediate_size;
   int vocab = cfg->vocab_size;
+  float rope_theta = cfg->rope_theta;
 
   lookup(x, w->token_emb, token_id, hidden);
 
@@ -149,8 +177,23 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
     matvec(k, layer->wk, xn, kv_dim, hidden);
     matvec(v, layer->wv, xn, kv_dim, hidden);
 
+    for (int h = 0; h < num_heads; h++)
+      rope_rotation(q + h * head_dim, pos, head_dim, rope_theta);
+
+    for (int h = 0; h < num_kv_heads; h++)
+      rope_rotation(k + h * head_dim, pos, head_dim, rope_theta);
+
+    memcpy(cache_slot(k_cache, l, pos, max_seq, kv_dim), k,
+           kv_dim * sizeof(float));
+    memcpy(cache_slot(v_cache, l, pos, max_seq, kv_dim), v,
+           kv_dim * sizeof(float));
+
+    float *k_base = cache_layer(k_cache, l, max_seq, kv_dim);
+    float *v_base = cache_layer(v_cache, l, max_seq, kv_dim);
+
     // do the Grouped Query Attention for this pass.
-    attention(attn, q, k, v, 1, head_dim, num_kv_heads, num_heads);
+    attention(attn, q, k_base, v_base, pos + 1, head_dim, num_kv_heads,
+              num_heads);
     matvec(xn, layer->wo, attn, hidden, hidden);
     add(x, xn, hidden);
 
