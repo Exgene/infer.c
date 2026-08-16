@@ -1,6 +1,7 @@
 #ifndef OPS_H
 #define OPS_H
 
+#include "config.h"
 #include <stdint.h>
 
 float bf16_to_float32(uint16_t in);
@@ -15,5 +16,8 @@ void matvec(float *y, const uint16_t *W, const float *x, int out, int in);
 void add(float *x, const float *branch, int n);
 
 void silu(float *x, int n);
+
+void attention(float *out, const float *q, const float *k, const float *v,
+               int seq_len, WeightsConfigJson *cfg);
 
 #endif

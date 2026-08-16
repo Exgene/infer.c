@@ -1,7 +1,8 @@
 #include "ops.h"
-#include <cmath>
+#include "config.h"
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 float bf16_to_float32(uint16_t in) {
@@ -78,4 +79,52 @@ void softmax(float *x, int n) {
   for (int i = 0; i < n; i++) {
     x[i] /= sum;
   }
+}
+
+void attention(float *out, const float *q, const float *k, const float *v,
+               int seq_len, WeightsConfigJson *cfg) {
+  // to avoid pointer inderection store them as ints
+  int head_dim = cfg->head_dim;
+  int num_kv_heads = cfg->num_kv_heads;
+  int num_heads = cfg->num_heads;
+
+  // derive things like scale factor, kv_dim etc.
+  int kv_dim = num_kv_heads * head_dim;
+  float scale = 1.0f / sqrtf((float)head_dim);
+  float *score = malloc(sizeof(float) * seq_len);
+
+  // For each head we calculate the attention!
+  for (int h = 0; h < num_heads; h++) {
+    int kv_h = h / (num_heads / num_kv_heads);
+    const float *qh = q + h * head_dim;
+
+    // for each token we need to calculate its key value and dot product it with
+    // query.
+    for (int t = 0; t < seq_len; t++) {
+      const float *kh = k + kv_h * head_dim + t * kv_dim;
+      float dot = 0.0f;
+      // And we are offsetting by head_dim (i think its 64 in this case)
+      for (int d = 0; d < head_dim; d++) {
+        dot += qh[d] * kh[d];
+      }
+      score[t] = dot * scale;
+    }
+
+    softmax(score, seq_len);
+
+    float *o = out + head_dim * h;
+    for (int i = 0; i < head_dim; i++) {
+      o[i] = 0.0f;
+    }
+
+    // same as key we are doign it with value, and multiply by score to get the
+    // attention output.
+    for (int t = 0; t < seq_len; t++) {
+      const float *vh = v + kv_h * head_dim + t * kv_dim;
+      for (int d = 0; d < head_dim; d++) {
+        out[d] += vh[d] * score[t];
+      }
+    }
+  }
+  free(score);
 }
