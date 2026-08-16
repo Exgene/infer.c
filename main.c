@@ -5,10 +5,12 @@
 #include "config.h"
 #include "ops.h"
 #include "safetensors.h"
+#include "tokenizer.h"
 #include "weights.h"
 
 const char *LOCATION = "./models/llama-3.2-1B-instruct/model.safetensors";
 const char *CONFIG_LOCATION = "./models/llama-3.2-1B-instruct/config.json";
+const char *TOKENIZER_LOCATION = "./models/llama-3.2-1B-instruct/tokenizer.json";
 
 int main(int argc, char *argv[]) {
   (void)argc;
@@ -25,6 +27,12 @@ int main(int argc, char *argv[]) {
          config.vocab_size, config.max_seq_len, config.bos_id,
          config.num_eos ? config.eos_ids[0] : -1, config.rms_norm_eps,
          config.rope_theta, (int)config.tie_word_embeddings);
+
+  Tokenizer tok;
+  if (tokenizer_load(TOKENIZER_LOCATION, config.vocab_size, &tok) != 0)
+    return EXIT_FAILURE;
+  fprintf(stderr, "tokenizer: %d ids, bos=%s\n", tok.vocab_size,
+          tokenizer_lookup(&tok, config.bos_id));
 
   SafeTensors st;
   if (safetensors_open(LOCATION, &st) != 0)
@@ -84,7 +92,10 @@ int main(int argc, char *argv[]) {
                    tokens[pos], pos, k_cache, v_cache, max_seq);
   }
   for (;;) {
-    printf("%d ", next);
+    char piece[1024];
+    int nbytes = tokenizer_decode_id(&tok, next, piece, sizeof(piece));
+    if (nbytes > 0)
+      fwrite(piece, 1, (size_t)nbytes, stdout);
     fflush(stdout);
     int eos = 0;
     for (int i = 0; i < config.num_eos; i++)
@@ -99,6 +110,7 @@ int main(int argc, char *argv[]) {
   }
   printf("\n");
 
+  tokenizer_free(&tok);
   safetensors_close(&st);
   return EXIT_SUCCESS;
 }
