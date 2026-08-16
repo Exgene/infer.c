@@ -82,8 +82,13 @@ int main(int argc, char *argv[]) {
                           sizeof(float));
 
   int tokens[32] = {0};
-  int n = 0;
-  tokens[n++] = config.bos_id;
+  int n = tokenizer_encode_bos(&tok, "hello", tokens, max_seq);
+  if (n < 0)
+    return EXIT_FAILURE;
+  fprintf(stderr, "encode:");
+  for (int i = 0; i < n; i++)
+    fprintf(stderr, " %d", tokens[i]);
+  fprintf(stderr, "\n");
   int next = 0;
 
   fprintf(stderr, "running first forward (this can take a while)...\n");
