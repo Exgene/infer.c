@@ -59,7 +59,7 @@ void add(float *x, const float *branch, int n) {
 void silu(float *x, int n) {
   for (int i = 0; i < n; i++) {
     float z = x[i];
-    x[i] = z / (1 + expf(z));
+    x[i] = z / (1 + expf(-z));
   }
 }
 
@@ -82,12 +82,7 @@ void softmax(float *x, int n) {
 }
 
 void attention(float *out, const float *q, const float *k, const float *v,
-               int seq_len, WeightsConfigJson *cfg) {
-  // to avoid pointer inderection store them as ints
-  int head_dim = cfg->head_dim;
-  int num_kv_heads = cfg->num_kv_heads;
-  int num_heads = cfg->num_heads;
-
+               int seq_len, int head_dim, int num_kv_heads, int num_heads) {
   // derive things like scale factor, kv_dim etc.
   int kv_dim = num_kv_heads * head_dim;
   float scale = 1.0f / sqrtf((float)head_dim);
@@ -122,9 +117,61 @@ void attention(float *out, const float *q, const float *k, const float *v,
     for (int t = 0; t < seq_len; t++) {
       const float *vh = v + kv_h * head_dim + t * kv_dim;
       for (int d = 0; d < head_dim; d++) {
-        out[d] += vh[d] * score[t];
+        o[d] += vh[d] * score[t];
       }
     }
   }
   free(score);
+}
+
+int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
+            float *q, float *k, float *v, float *attn, float *hb, float *hb2,
+            float *logits, int token_id) {
+  // to avoid pointer inderection take once and use multiple times!
+  int hidden = cfg->hidden_size;
+  int num_layers = cfg->num_layers;
+  int head_dim = cfg->head_dim;
+  int num_kv_heads = cfg->num_kv_heads;
+  int kv_dim = head_dim * num_kv_heads;
+  float eps = cfg->rms_norm_eps;
+  int num_heads = cfg->num_heads;
+  int intermediate = cfg->intermediate_size;
+  int vocab = cfg->vocab_size;
+
+  lookup(x, w->token_emb, token_id, hidden);
+
+  for (int l = 0; l < num_layers; l++) {
+    const Layer *layer = &w->layers[l];
+    rmsnorm(xn, x, layer->rms_att, hidden, eps);
+
+    // for attention mechanism calculate q @ Wq, k @ Wk, v @ Wv
+    matvec(q, layer->wq, xn, hidden, hidden);
+    matvec(k, layer->wk, xn, kv_dim, hidden);
+    matvec(v, layer->wv, xn, kv_dim, hidden);
+
+    // do the Grouped Query Attention for this pass.
+    attention(attn, q, k, v, 1, head_dim, num_kv_heads, num_heads);
+    matvec(xn, layer->wo, attn, hidden, hidden);
+    add(x, xn, hidden);
+
+    // MLP forward pass
+    rmsnorm(xn, x, layer->rms_ffn, hidden, eps);
+    matvec(hb, layer->w_gate, xn, intermediate, hidden);
+    matvec(hb2, layer->w_up, xn, intermediate, hidden);
+    silu(hb, intermediate);
+    for (int i = 0; i < intermediate; i++) {
+      hb[i] *= hb2[i];
+    }
+    matvec(xn, layer->w_down, hb, hidden, intermediate);
+    add(x, xn, hidden);
+  }
+
+  rmsnorm(xn, x, w->rms_final, hidden, eps);
+  matvec(logits, w->token_emb, xn, vocab, hidden);
+  int best = 0;
+  for (int i = 1; i < vocab; i++) {
+    if (logits[i] > logits[best])
+      best = i;
+  }
+  return best;
 }

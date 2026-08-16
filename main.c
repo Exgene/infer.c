@@ -53,17 +53,30 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
-  float *x = malloc(config.hidden_size * sizeof(float));
-  float *q = malloc(config.hidden_size * sizeof(float));
-  float *xn = malloc(config.hidden_size * sizeof(float));
   float *logits = malloc(config.vocab_size * sizeof(float));
 
-  lookup(x, w.token_emb, 100, config.hidden_size);
-  printf("x:%f\n", x[0]);
-  rmsnorm(xn, x, w.layers[0].rms_att, config.hidden_size, config.rms_norm_eps);
-  printf("xn:%f\n", xn[0]);
-  matvec(q, w.layers[0].wq, xn, config.hidden_size, config.hidden_size);
-  printf("y:%f\n", q[0]);
+  float *x = malloc(config.hidden_size * sizeof(float));
+  float *xn = malloc(config.hidden_size * sizeof(float));
+
+  float *q = malloc(config.hidden_size * sizeof(float));
+  float *k = malloc(config.num_kv_heads * config.head_dim * sizeof(float));
+  float *v = malloc(config.num_kv_heads * config.head_dim * sizeof(float));
+  float *attn = malloc(config.hidden_size * sizeof(float));
+
+  float *hb = malloc(config.intermediate_size * sizeof(float));
+  float *hb2 = malloc(config.intermediate_size * sizeof(float));
+
+  int token_id = config.bos_id;
+
+  int next =
+      forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, token_id);
+  printf("Next Token: %d", next);
+
+  // lookup(x, w.token_emb, 100, config.hidden_size);
+  // printf("x:%f\n", x[0]);
+  // rmsnorm(xn, x, w.layers[0].rms_att, config.hidden_size,
+  // config.rms_norm_eps); printf("xn:%f\n", xn[0]); matvec(q, w.layers[0].wq,
+  // xn, config.hidden_size, config.hidden_size); printf("y:%f\n", q[0]);
 
   safetensors_close(&st);
   return EXIT_SUCCESS;
