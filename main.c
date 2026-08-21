@@ -75,7 +75,7 @@ int main(int argc, char *argv[]) {
   float *hb = malloc(config.intermediate_size * sizeof(float));
   float *hb2 = malloc(config.intermediate_size * sizeof(float));
 
-  const int max_seq = 32;
+  const int max_seq = 128;
   int kv_dim = config.num_kv_heads * config.head_dim;
   float *k_cache =
       malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
@@ -83,20 +83,40 @@ int main(int argc, char *argv[]) {
       malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
 
   int tokens[32] = {0};
-  int n = tokenizer_encode_bos(&tok, "hello", tokens, max_seq);
+  const char *user = "What is 2+2?";
+  char prompt[4096];
+
+  // I can parse the tokenizer-config.json to get the template. but idw waste
+  // time parsing JINJA SHI
+  int m =
+      snprintf(prompt, sizeof(prompt),
+               "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
+               "%s"
+               "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+               user);
+
+  if (m < 0 || m >= (int)sizeof(prompt))
+    return EXIT_FAILURE;
+
+  fprintf(stderr, "System Prompt + User prompt: %s", prompt);
+
+  int n = tokenizer_encode(&tok, prompt, tokens, max_seq);
+
   if (n < 0)
     return EXIT_FAILURE;
+
   fprintf(stderr, "encode:");
   for (int i = 0; i < n; i++)
     fprintf(stderr, " %d", tokens[i]);
+
   fprintf(stderr, "\n");
   int next = 0;
 
-  fprintf(stderr, "running first forward (this can take a while)...\n");
   for (int pos = 0; pos < n; pos++) {
     next = forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits,
                    tokens[pos], pos, k_cache, v_cache, max_seq);
   }
+
   for (;;) {
     char piece[1024];
     int nbytes = tokenizer_decode_id(&tok, next, piece, sizeof(piece));
