@@ -35,19 +35,20 @@ static float llama3_freq(float freq, float scale, float low, float high,
 
 void rope_rotation(float *x, int position, int head_dim, float rope_theta,
                    float scale, float low, float high, int orig) {
-  for (int i = 0; i < head_dim; i += 2) {
-    float freq = 1.0f / powf(rope_theta, (float)i / head_dim);
+  int half = head_dim / 2;
+  for (int i = 0; i < half; i++) {
+    float freq = 1.0f / powf(rope_theta, (2.0f * (float)i) / (float)head_dim);
     freq = llama3_freq(freq, scale, low, high, orig);
-    float theta = position * freq;
+    float theta = (float)position * freq;
 
     float c = cosf(theta);
     float s = sinf(theta);
 
     float x0 = x[i];
-    float x1 = x[i + 1];
+    float x1 = x[i + half];
 
     x[i] = x0 * c - x1 * s;
-    x[i + 1] = x0 * s + x1 * c;
+    x[i + half] = x0 * s + x1 * c;
   }
 }
 

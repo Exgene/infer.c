@@ -75,7 +75,7 @@ int main(int argc, char *argv[]) {
   float *hb = malloc(config.intermediate_size * sizeof(float));
   float *hb2 = malloc(config.intermediate_size * sizeof(float));
 
-  const int max_seq = config.max_seq_len;
+  const int max_seq = 128;
   int kv_dim = config.num_kv_heads * config.head_dim;
   float *k_cache =
       malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
