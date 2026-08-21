@@ -29,9 +29,11 @@ void attention(float *out, const float *q, const float *k, const float *v,
 int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
             float *q, float *k, float *v, float *attn, float *hb, float *hb2,
             float *logits, int token_id, int pos, float *k_cache,
-            float *v_cache, int max_seq);
+            float *v_cache, int max_seq, float scale, float low, float high,
+            int orig);
 
-void rope_rotation(float *x, int position, int head_dim, float rope_theta);
+void rope_rotation(float *x, int position, int head_dim, float rope_theta,
+                   float scale, float low, float high, int orig);
 
 int sample_top_p(float *logits, int vocab, float p, float temp);
 #endif

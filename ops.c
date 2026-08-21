@@ -20,9 +20,24 @@ float bf16_to_float32(uint16_t in) {
   return out;
 }
 
-void rope_rotation(float *x, int position, int head_dim, float rope_theta) {
+static float llama3_freq(float freq, float scale, float low, float high,
+                         int orig) {
+  float wavelen = 6.283185307f / freq;
+  float low_w = (float)orig / low;
+  float high_w = (float)orig / high;
+  if (wavelen < high_w)
+    return freq;
+  if (wavelen > low_w)
+    return freq / scale;
+  float smooth = ((float)orig / wavelen - low) / (high - low);
+  return (1.0f - smooth) * (freq / scale) + smooth * freq;
+}
+
+void rope_rotation(float *x, int position, int head_dim, float rope_theta,
+                   float scale, float low, float high, int orig) {
   for (int i = 0; i < head_dim; i += 2) {
     float freq = 1.0f / powf(rope_theta, (float)i / head_dim);
+    freq = llama3_freq(freq, scale, low, high, orig);
     float theta = position * freq;
 
     float c = cosf(theta);
@@ -153,7 +168,8 @@ static float *cache_layer(float *cache, int layer, int max_seq, int kv_dim) {
 int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
             float *q, float *k, float *v, float *attn, float *hb, float *hb2,
             float *logits, int token_id, int pos, float *k_cache,
-            float *v_cache, int max_seq) {
+            float *v_cache, int max_seq, float scale, float low, float high,
+            int orig) {
   // to avoid pointer inderection take once and use multiple times!
   int hidden = cfg->hidden_size;
   int num_layers = cfg->num_layers;
@@ -178,10 +194,12 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
     matvec(v, layer->wv, xn, kv_dim, hidden);
 
     for (int h = 0; h < num_heads; h++)
-      rope_rotation(q + h * head_dim, pos, head_dim, rope_theta);
+      rope_rotation(q + h * head_dim, pos, head_dim, rope_theta, scale, low,
+                    high, orig);
 
     for (int h = 0; h < num_kv_heads; h++)
-      rope_rotation(k + h * head_dim, pos, head_dim, rope_theta);
+      rope_rotation(k + h * head_dim, pos, head_dim, rope_theta, scale, low,
+                    high, orig);
 
     memcpy(cache_slot(k_cache, l, pos, max_seq, kv_dim), k,
            kv_dim * sizeof(float));

@@ -112,9 +112,14 @@ int main(int argc, char *argv[]) {
   fprintf(stderr, "\n");
   int next = 0;
 
+  float scale = config.rope_scale;
+  float low = config.rope_low;
+  float high = config.rope_high;
+  int origin = config.rope_origin_ctx;
+
   for (int pos = 0; pos < n; pos++) {
     forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, tokens[pos],
-            pos, k_cache, v_cache, max_seq);
+            pos, k_cache, v_cache, max_seq, scale, low, high, origin);
   }
 
   next = sample_top_p(logits, config.vocab_size, 0.9f, 1.0f);
@@ -133,7 +138,7 @@ int main(int argc, char *argv[]) {
       break;
     tokens[n] = next;
     forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, tokens[n], n,
-            k_cache, v_cache, max_seq);
+            k_cache, v_cache, max_seq, scale, low, high, origin);
 
     next = sample_top_p(logits, config.vocab_size, 0.9f, 1.0f);
     n++;

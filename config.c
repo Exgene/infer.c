@@ -101,6 +101,18 @@ int load_config_json(const char *path, WeightsConfigJson *cfg) {
     }
   }
 
+  struct json rs = json_object_get(root, "rope_scaling");
+  cfg->rope_scale = 1.0f;
+  cfg->rope_low = 1.0f;
+  cfg->rope_high = 1.0f;
+  cfg->rope_origin_ctx = cfg->max_seq_len;
+  if (json_exists(rs)) {
+    json_get_float(rs, "factor", &cfg->rope_scale);
+    json_get_float(rs, "low_freq_factor", &cfg->rope_low);
+    json_get_float(rs, "high_freq_factor", &cfg->rope_high);
+    json_get_int(rs, "original_max_position_embeddings", &cfg->rope_origin_ctx);
+  }
+
   free(buf);
   return 0;
 }
