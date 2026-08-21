@@ -5,6 +5,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 float bf16_to_float32(uint16_t in) {
   // cool trick, you cast it to 32 bit to get
@@ -52,14 +57,13 @@ void rope_rotation(float *x, int position, int head_dim, float rope_theta,
   }
 }
 
-void lookup(float *x, const uint16_t *token_emb, int token_id, int hidden) {
+void lookup(float *x, float *token_emb, int token_id, int hidden) {
   for (int i = 0; i < hidden; i++) {
-    x[i] = bf16_to_float32(token_emb[token_id * hidden + i]);
+    x[i] = token_emb[token_id * hidden + i];
   }
 }
 
-void rmsnorm(float *xn, const float *x, const uint16_t *weight, int n,
-             float eps) {
+void rmsnorm(float *xn, const float *x, float *weight, int n, float eps) {
   // calculate RMS => then divide by it to scale the number (multiply with the
   // weights)
   float sum = 0.0f;
@@ -69,15 +73,16 @@ void rmsnorm(float *xn, const float *x, const uint16_t *weight, int n,
 
   float rms = sqrtf(sum / (float)n + eps);
   for (int i = 0; i < n; i++) {
-    xn[i] = (x[i] / rms) * bf16_to_float32(weight[i]);
+    xn[i] = (x[i] / rms) * weight[i];
   }
 }
 
-void matvec(float *y, const uint16_t *W, const float *x, int out, int in) {
+void matvec(float *y, float *W, const float *x, int out, int in) {
+#pragma omp parallel for
   for (int i = 0; i < out; i++) {
     float sum = 0.0f;
     for (int j = 0; j < in; j++) {
-      sum += bf16_to_float32(W[i * in + j]) * x[j];
+      sum += W[i * in + j] * x[j];
     }
     y[i] = sum;
   }
@@ -249,6 +254,8 @@ static int cmp_prob_desc(const void *a, const void *b) {
 }
 
 int sample_top_p(float *logits, int vocab, float p, float temp) {
+  srand((unsigned)time(NULL));
+
   if (temp < 1e-6f)
     temp = 1.0f;
   for (int i = 0; i < vocab; i++)

@@ -39,28 +39,34 @@ int main(int argc, char *argv[]) {
   if (safetensors_open(LOCATION, &st) != 0)
     return EXIT_FAILURE;
 
-  for (size_t i = 0; i < st.tensors.len; i++) {
-    WeightsMetaData *md = &st.tensors.data[i];
-    printf("name=%s, dtype=%s, ndim=%d\n", md->name, md->dtype, md->ndim);
-    printf("-------------\n");
-  }
+  // for (size_t i = 0; i < st.tensors.len; i++) {
+  //   WeightsMetaData *md = &st.tensors.data[i];
+  //   printf("name=%s, dtype=%s, ndim=%d\n", md->name, md->dtype, md->ndim);
+  //   printf("-------------\n");
+  // }
 
   const WeightsMetaData *emb =
       safetensors_find(&st, "model.embed_tokens.weight");
-  if (emb) {
-    const void *p = safetensors_ptr(&st, emb);
-    printf("mmap: file=%zu bytes, blob=%zu bytes\n", st.map_size, st.blob_size);
-    printf("embed_tokens ptr=%p bytes=%llu dtype=%s\n", p,
-           (unsigned long long)(emb->offset[1] - emb->offset[0]), emb->dtype);
-  } else {
-    fprintf(stderr, "model.embed_tokens.weight not found\n");
-  }
+  // if (emb) {
+  //   const void *p = safetensors_ptr(&st, emb);
+  //   printf("mmap: file=%zu bytes, blob=%zu bytes\n", st.map_size,
+  //   st.blob_size); printf("embed_tokens ptr=%p bytes=%llu dtype=%s\n", p,
+  //          (unsigned long long)(emb->offset[1] - emb->offset[0]),
+  //          emb->dtype);
+  // } else {
+  //   fprintf(stderr, "model.embed_tokens.weight not found\n");
+  // }
 
   Weights w;
   int error = bind_weights(&st, &config, &w);
   if (error) {
+    free_weights(&w, config.num_layers);
+    safetensors_close(&st);
     return EXIT_FAILURE;
   }
+
+  // we don't really need the metadat about the ST anymore
+  safetensors_close(&st);
 
   float *logits = malloc(config.vocab_size * sizeof(float));
 
@@ -116,13 +122,14 @@ int main(int argc, char *argv[]) {
   float low = config.rope_low;
   float high = config.rope_high;
   int origin = config.rope_origin_ctx;
+  float temperature = 0.9;
 
   for (int pos = 0; pos < n; pos++) {
     forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, tokens[pos],
             pos, k_cache, v_cache, max_seq, scale, low, high, origin);
   }
 
-  next = sample_top_p(logits, config.vocab_size, 0.9f, 1.0f);
+  next = sample_top_p(logits, config.vocab_size, 0.9f, temperature);
 
   for (;;) {
     char piece[1024];
@@ -140,12 +147,12 @@ int main(int argc, char *argv[]) {
     forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, tokens[n], n,
             k_cache, v_cache, max_seq, scale, low, high, origin);
 
-    next = sample_top_p(logits, config.vocab_size, 0.9f, 1.0f);
+    next = sample_top_p(logits, config.vocab_size, 0.9f, temperature);
     n++;
   }
   printf("\n");
 
   tokenizer_free(&tok);
-  safetensors_close(&st);
+  free_weights(&w, config.num_layers);
   return EXIT_SUCCESS;
 }

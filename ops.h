@@ -1,5 +1,8 @@
 #ifndef OPS_H
 #define OPS_H
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "config.h"
 #include "weights.h"
@@ -12,12 +15,11 @@ typedef struct {
 
 float bf16_to_float32(uint16_t in);
 
-void lookup(float *x, const uint16_t *token_emb, int token_id, int hidden);
+void lookup(float *x, float *token_emb, int token_id, int hidden);
 
-void rmsnorm(float *xn, const float *x, const uint16_t *weight, int n,
-             float eps);
+void rmsnorm(float *xn, const float *x, float *weight, int n, float eps);
 
-void matvec(float *y, const uint16_t *W, const float *x, int out, int in);
+void matvec(float *y, float *W, const float *x, int out, int in);
 
 void add(float *x, const float *branch, int n);
 
