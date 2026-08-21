@@ -10,7 +10,8 @@
 
 const char *LOCATION = "./models/llama-3.2-1B-instruct/model.safetensors";
 const char *CONFIG_LOCATION = "./models/llama-3.2-1B-instruct/config.json";
-const char *TOKENIZER_LOCATION = "./models/llama-3.2-1B-instruct/tokenizer.json";
+const char *TOKENIZER_LOCATION =
+    "./models/llama-3.2-1B-instruct/tokenizer.json";
 
 int main(int argc, char *argv[]) {
   (void)argc;
@@ -76,10 +77,10 @@ int main(int argc, char *argv[]) {
 
   const int max_seq = 32;
   int kv_dim = config.num_kv_heads * config.head_dim;
-  float *k_cache = malloc((size_t)config.num_layers * max_seq * kv_dim *
-                          sizeof(float));
-  float *v_cache = malloc((size_t)config.num_layers * max_seq * kv_dim *
-                          sizeof(float));
+  float *k_cache =
+      malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
+  float *v_cache =
+      malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
 
   int tokens[32] = {0};
   int n = tokenizer_encode_bos(&tok, "hello", tokens, max_seq);
