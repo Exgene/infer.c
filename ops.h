@@ -5,6 +5,11 @@
 #include "weights.h"
 #include <stdint.h>
 
+typedef struct {
+  float p;
+  int id;
+} Prob;
+
 float bf16_to_float32(uint16_t in);
 
 void lookup(float *x, const uint16_t *token_emb, int token_id, int hidden);
@@ -28,4 +33,5 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
 
 void rope_rotation(float *x, int position, int head_dim, float rope_theta);
 
+int sample_top_p(float *logits, int vocab, float p, float temp);
 #endif

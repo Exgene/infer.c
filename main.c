@@ -75,15 +75,15 @@ int main(int argc, char *argv[]) {
   float *hb = malloc(config.intermediate_size * sizeof(float));
   float *hb2 = malloc(config.intermediate_size * sizeof(float));
 
-  const int max_seq = 128;
+  const int max_seq = config.max_seq_len;
   int kv_dim = config.num_kv_heads * config.head_dim;
   float *k_cache =
       malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
   float *v_cache =
       malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
 
-  int tokens[32] = {0};
-  const char *user = "What is 2+2?";
+  int *tokens = malloc(sizeof(int) * max_seq);
+  const char *user = "What model are you?";
   char prompt[4096];
 
   // I can parse the tokenizer-config.json to get the template. but idw waste
@@ -113,9 +113,11 @@ int main(int argc, char *argv[]) {
   int next = 0;
 
   for (int pos = 0; pos < n; pos++) {
-    next = forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits,
-                   tokens[pos], pos, k_cache, v_cache, max_seq);
+    forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, tokens[pos],
+            pos, k_cache, v_cache, max_seq);
   }
+
+  next = sample_top_p(logits, config.vocab_size, 0.9f, 1.0f);
 
   for (;;) {
     char piece[1024];
@@ -130,8 +132,10 @@ int main(int argc, char *argv[]) {
     if (eos || n >= max_seq)
       break;
     tokens[n] = next;
-    next = forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits,
-                   tokens[n], n, k_cache, v_cache, max_seq);
+    forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, tokens[n], n,
+            k_cache, v_cache, max_seq);
+
+    next = sample_top_p(logits, config.vocab_size, 0.9f, 1.0f);
     n++;
   }
   printf("\n");

@@ -218,3 +218,50 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
   }
   return best;
 }
+
+static int cmp_prob_desc(const void *a, const void *b) {
+  float da = ((const Prob *)a)->p;
+  float db = ((const Prob *)b)->p;
+  if (da < db)
+    return 1;
+  if (da > db)
+    return -1;
+  return 0;
+}
+
+int sample_top_p(float *logits, int vocab, float p, float temp) {
+  if (temp < 1e-6f)
+    temp = 1.0f;
+  for (int i = 0; i < vocab; i++)
+    logits[i] /= temp;
+  softmax(logits, vocab);
+
+  Prob *ps = malloc((size_t)vocab * sizeof(Prob));
+  for (int i = 0; i < vocab; i++) {
+    ps[i].p = logits[i];
+    ps[i].id = i;
+  }
+  qsort(ps, (size_t)vocab, sizeof(Prob), cmp_prob_desc);
+
+  float cum = 0.0f;
+  int last = 0;
+  for (int i = 0; i < vocab; i++) {
+    cum += ps[i].p;
+    last = i;
+    if (cum >= p)
+      break;
+  }
+
+  float u = ((float)rand() / (float)RAND_MAX) * cum;
+  float run = 0.0f;
+  int id = ps[last].id;
+  for (int i = 0; i <= last; i++) {
+    run += ps[i].p;
+    if (u <= run) {
+      id = ps[i].id;
+      break;
+    }
+  }
+  free(ps);
+  return id;
+}
