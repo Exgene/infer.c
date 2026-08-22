@@ -1,8 +1,5 @@
 #ifndef OPS_H
 #define OPS_H
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
 #include "config.h"
 #include "weights.h"
