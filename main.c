@@ -7,6 +7,7 @@
 #include "safetensors.h"
 #include "tokenizer.h"
 #include "weights.h"
+#include <time.h>
 
 const char *LOCATION = "./models/llama-3.2-1B-instruct/model.safetensors";
 const char *CONFIG_LOCATION = "./models/llama-3.2-1B-instruct/config.json";
@@ -16,6 +17,8 @@ const char *TOKENIZER_LOCATION =
 int main(int argc, char *argv[]) {
   (void)argc;
   (void)argv;
+
+  srand((unsigned)time(NULL));
 
   WeightsConfigJson config;
   if (load_config_json(CONFIG_LOCATION, &config) != 0)
@@ -67,6 +70,7 @@ int main(int argc, char *argv[]) {
 
   // we don't really need the metadat about the ST anymore
   safetensors_close(&st);
+  const int max_seq = 128;
 
   float *logits = malloc(config.vocab_size * sizeof(float));
 
@@ -80,8 +84,8 @@ int main(int argc, char *argv[]) {
 
   float *hb = malloc(config.intermediate_size * sizeof(float));
   float *hb2 = malloc(config.intermediate_size * sizeof(float));
+  float *score = malloc(sizeof(float) * max_seq);
 
-  const int max_seq = 128;
   int kv_dim = config.num_kv_heads * config.head_dim;
   float *k_cache =
       malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
@@ -89,7 +93,7 @@ int main(int argc, char *argv[]) {
       malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
 
   int *tokens = malloc(sizeof(int) * max_seq);
-  const char *user = "What model are you?";
+  const char *user = "Do you like ice cream?";
   char prompt[4096];
 
   // I can parse the tokenizer-config.json to get the template. but idw waste
@@ -123,13 +127,14 @@ int main(int argc, char *argv[]) {
   float high = config.rope_high;
   int origin = config.rope_origin_ctx;
   float temperature = 0.9;
+  Prob *ps = malloc((size_t)config.vocab_size * sizeof(Prob));
 
   for (int pos = 0; pos < n; pos++) {
     forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, tokens[pos],
-            pos, k_cache, v_cache, max_seq, scale, low, high, origin);
+            pos, k_cache, v_cache, max_seq, scale, low, high, origin, score);
   }
 
-  next = sample_top_p(logits, config.vocab_size, 0.9f, temperature);
+  next = sample_top_p(logits, config.vocab_size, 0.9f, temperature, ps);
 
   for (;;) {
     char piece[1024];
@@ -145,9 +150,9 @@ int main(int argc, char *argv[]) {
       break;
     tokens[n] = next;
     forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits, tokens[n], n,
-            k_cache, v_cache, max_seq, scale, low, high, origin);
+            k_cache, v_cache, max_seq, scale, low, high, origin, score);
 
-    next = sample_top_p(logits, config.vocab_size, 0.9f, temperature);
+    next = sample_top_p(logits, config.vocab_size, 0.9f, temperature, ps);
     n++;
   }
   printf("\n");

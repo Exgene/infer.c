@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -120,11 +119,12 @@ void softmax(float *x, int n) {
 }
 
 void attention(float *out, const float *q, const float *k, const float *v,
-               int seq_len, int head_dim, int num_kv_heads, int num_heads) {
+               int seq_len, int head_dim, int num_kv_heads, int num_heads,
+               float *score) {
   // derive things like scale factor, kv_dim etc.
   int kv_dim = num_kv_heads * head_dim;
   float scale = 1.0f / sqrtf((float)head_dim);
-  float *score = malloc(sizeof(float) * seq_len);
+  memset(score, 0, seq_len * sizeof(float));
 
   // For each head we calculate the attention!
   for (int h = 0; h < num_heads; h++) {
@@ -159,7 +159,6 @@ void attention(float *out, const float *q, const float *k, const float *v,
       }
     }
   }
-  free(score);
 }
 
 static float *cache_slot(float *cache, int layer, int pos, int max_seq,
@@ -175,7 +174,7 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
             float *q, float *k, float *v, float *attn, float *hb, float *hb2,
             float *logits, int token_id, int pos, float *k_cache,
             float *v_cache, int max_seq, float scale, float low, float high,
-            int orig) {
+            int orig, float *score) {
   // to avoid pointer inderection take once and use multiple times!
   int hidden = cfg->hidden_size;
   int num_layers = cfg->num_layers;
@@ -217,7 +216,7 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
 
     // do the Grouped Query Attention for this pass.
     attention(attn, q, k_base, v_base, pos + 1, head_dim, num_kv_heads,
-              num_heads);
+              num_heads, score);
     matvec(xn, layer->wo, attn, hidden, hidden);
     add(x, xn, hidden);
 
@@ -253,16 +252,13 @@ static int cmp_prob_desc(const void *a, const void *b) {
   return 0;
 }
 
-int sample_top_p(float *logits, int vocab, float p, float temp) {
-  srand((unsigned)time(NULL));
-
+int sample_top_p(float *logits, int vocab, float p, float temp, Prob *ps) {
   if (temp < 1e-6f)
     temp = 1.0f;
   for (int i = 0; i < vocab; i++)
     logits[i] /= temp;
   softmax(logits, vocab);
 
-  Prob *ps = malloc((size_t)vocab * sizeof(Prob));
   for (int i = 0; i < vocab; i++) {
     ps[i].p = logits[i];
     ps[i].id = i;
@@ -288,6 +284,5 @@ int sample_top_p(float *logits, int vocab, float p, float temp) {
       break;
     }
   }
-  free(ps);
   return id;
 }
