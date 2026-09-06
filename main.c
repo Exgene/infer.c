@@ -4,9 +4,9 @@
 #include <string.h>
 
 #include "config.h"
+#include "loader.h"
 #include "ops.h"
 #include "prof.h"
-#include "safetensors.h"
 #include "tokenizer.h"
 #include "weights.h"
 #include <time.h>
@@ -15,10 +15,20 @@
 #include <omp.h>
 #endif
 
-const char *LOCATION = "./models/llama-3.2-1B-instruct/model.safetensors";
+const char *DEFAULT_MODEL =
+    "./models/llama-3.2-1B-instruct/model.safetensors";
 const char *CONFIG_LOCATION = "./models/llama-3.2-1B-instruct/config.json";
 const char *TOKENIZER_LOCATION =
     "./models/llama-3.2-1B-instruct/tokenizer.json";
+
+static const char *arg_get_str(int argc, char **argv, const char *flag,
+                               const char *fallback) {
+  for (int i = 1; i + 1 < argc; i++) {
+    if (strcmp(argv[i], flag) == 0)
+      return argv[i + 1];
+  }
+  return fallback;
+}
 
 static int arg_has_flag(int argc, char **argv, const char *flag) {
   for (int i = 1; i < argc; i++) {
@@ -50,6 +60,7 @@ int main(int argc, char *argv[]) {
   int benchmark = arg_has_flag(argc, argv, "--benchmark");
   int profile = benchmark || arg_has_flag(argc, argv, "--profile");
   int gen_tokens = arg_get_int(argc, argv, "-n", 128);
+  const char *model_path = arg_get_str(argc, argv, "--model", DEFAULT_MODEL);
 
   if (!benchmark)
     srand((unsigned)time(NULL));
@@ -79,18 +90,12 @@ int main(int argc, char *argv[]) {
             tokenizer_lookup(&tok, config.bos_id));
   }
 
-  SafeTensors st;
-  if (safetensors_open(LOCATION, &st) != 0)
-    return EXIT_FAILURE;
-
   // for (size_t i = 0; i < st.tensors.len; i++) {
   //   WeightsMetaData *md = &st.tensors.data[i];
   //   printf("name=%s, dtype=%s, ndim=%d\n", md->name, md->dtype, md->ndim);
   //   printf("-------------\n");
   // }
 
-  const WeightsMetaData *emb =
-      safetensors_find(&st, "model.embed_tokens.weight");
   // if (emb) {
   //   const void *p = safetensors_ptr(&st, emb);
   //   printf("mmap: file=%zu bytes, blob=%zu bytes\n", st.map_size,
@@ -100,17 +105,15 @@ int main(int argc, char *argv[]) {
   // } else {
   //   fprintf(stderr, "model.embed_tokens.weight not found\n");
   // }
-  (void)emb;
 
   Weights w;
-  if (bind_weights(&st, &config, &w) != 0) {
-    free_weights(&w, config.num_layers);
-    safetensors_close(&st);
+  if (loader_open(model_path, &w, &config) != 0) {
+    fprintf(stderr, "failed to load model: %s\n", model_path);
     return EXIT_FAILURE;
   }
 
   // we don't really need the metadat about the ST anymore
-  safetensors_close(&st);
+
   double load_sec = prof_elapsed(t_load, prof_now());
 
   const int max_seq = 128;
@@ -244,7 +247,7 @@ int main(int argc, char *argv[]) {
                 prof_thread_count());
 
   tokenizer_free(&tok);
-  free_weights(&w, config.num_layers);
+  loader_close(&w, config.num_layers);
   free(logits);
   free(x);
   free(xn);

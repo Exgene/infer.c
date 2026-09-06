@@ -25,11 +25,11 @@ static inline float bf16_to_float32(uint16_t in) {
   return out;
 }
 
-void lookup(float *x, float *token_emb, int token_id, int hidden);
+void lookup(float *x, const Weight *token_emb, int token_id);
 
 void rmsnorm(float *xn, const float *x, float *weight, int n, float eps);
 
-void matvec(float *y, float *W, const float *x, int out, int in);
+void matvec(float *y, const Weight *W, const float *x);
 
 void add(float *x, const float *branch, int n);
 
@@ -50,10 +50,9 @@ void rope_rotation(float *x, int position, int head_dim, float rope_theta,
 
 int sample_top_p(float *logits, int vocab, float p, float temp, Prob *ps);
 
-void matmul(float *Y, float *W, const float *X, int n, int out, int in);
+void matmul(float *Y, const Weight *W, const float *X, int n);
 
-void lookup_batch(float *X, float *token_emb, const int *tokens, int n,
-                  int hidden);
+void lookup_batch(float *X, const Weight *token_emb, const int *tokens, int n);
 
 void rmsnorm_batch(float *Xn, const float *X, float *weight, int n_rows,
                    int hidden, float eps);

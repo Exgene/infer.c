@@ -1,5 +1,6 @@
 #include "ops.h"
 #include "config.h"
+#include "q4.h"
 #include <cblas.h>
 #include <math.h>
 #include <stddef.h>
@@ -43,10 +44,37 @@ void rope_rotation(float *x, int position, int head_dim, float rope_theta,
   }
 }
 
-void lookup(float *x, float *token_emb, int token_id, int hidden) {
-  for (int i = 0; i < hidden; i++) {
-    x[i] = token_emb[token_id * hidden + i];
+static void rope_rotation_interleaved(float *x, int position, int head_dim,
+                                      float rope_theta, float scale, float low,
+                                      float high, int orig) {
+  int half = head_dim / 2;
+  for (int i = 0; i < half; i++) {
+    float freq = 1.0f / powf(rope_theta, (2.0f * (float)i) / (float)head_dim);
+    freq = llama3_freq(freq, scale, low, high, orig);
+    float theta = (float)position * freq;
+    float c = cosf(theta);
+    float s = sinf(theta);
+    float x0 = x[2 * i];
+    float x1 = x[2 * i + 1];
+
+    x[2 * i] = x0 * c - x1 * s;
+    x[2 * i + 1] = x0 * s + x1 * c;
   }
+}
+
+static void apply_rope(float *x, int position, int head_dim, float rope_theta,
+                       float scale, float low, float high, int orig,
+                       int interleaved) {
+  if (interleaved) {
+    rope_rotation_interleaved(x, position, head_dim, rope_theta, scale, low,
+                              high, orig);
+    return;
+  }
+  rope_rotation(x, position, head_dim, rope_theta, scale, low, high, orig);
+}
+
+void lookup(float *x, const Weight *token_emb, int token_id) {
+  weight_lookup_row(x, token_emb, token_id);
 }
 
 void rmsnorm(float *xn, const float *x, float *weight, int n, float eps) {
@@ -63,14 +91,31 @@ void rmsnorm(float *xn, const float *x, float *weight, int n, float eps) {
   }
 }
 
-void matvec(float *y, float *W, const float *x, int out, int in) {
+static void matvec_f32(float *y, const float *W, const float *x, int out,
+                     int in) {
 #pragma omp parallel for
   for (int i = 0; i < out; i++) {
     float sum = 0.0f;
     for (int j = 0; j < in; j++) {
-      sum += W[i * in + j] * x[j];
+      sum += W[(size_t)i * in + j] * x[j];
     }
     y[i] = sum;
+  }
+}
+
+void matvec(float *y, const Weight *W, const float *x) {
+  switch (W->type) {
+  case WT_F32:
+    matvec_f32(y, W->data.f32, x, W->rows, W->cols);
+    break;
+  case WT_Q4_K:
+    matvec_q4_k(y, W->data.q4_k, x, W->rows, W->cols);
+    break;
+  case WT_Q6_K:
+    matvec_q6_k(y, W->data.q6_k, x, W->rows, W->cols);
+    break;
+  default:
+    break;
   }
 }
 
@@ -174,24 +219,24 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
   int vocab = cfg->vocab_size;
   float rope_theta = cfg->rope_theta;
 
-  lookup(x, w->token_emb, token_id, hidden);
+  lookup(x, &w->token_emb, token_id);
 
   for (int l = 0; l < num_layers; l++) {
     const Layer *layer = &w->layers[l];
     rmsnorm(xn, x, layer->rms_att, hidden, eps);
 
     // for attention mechanism calculate q @ Wq, k @ Wk, v @ Wv
-    matvec(q, layer->wq, xn, hidden, hidden);
-    matvec(k, layer->wk, xn, kv_dim, hidden);
-    matvec(v, layer->wv, xn, kv_dim, hidden);
+    matvec(q, &layer->wq, xn);
+    matvec(k, &layer->wk, xn);
+    matvec(v, &layer->wv, xn);
 
     for (int h = 0; h < num_heads; h++)
-      rope_rotation(q + h * head_dim, pos, head_dim, rope_theta, scale, low,
-                    high, orig);
+      apply_rope(q + h * head_dim, pos, head_dim, rope_theta, scale, low, high,
+                 orig, w->qk_interleaved);
 
     for (int h = 0; h < num_kv_heads; h++)
-      rope_rotation(k + h * head_dim, pos, head_dim, rope_theta, scale, low,
-                    high, orig);
+      apply_rope(k + h * head_dim, pos, head_dim, rope_theta, scale, low, high,
+                 orig, w->qk_interleaved);
 
     memcpy(cache_slot(k_cache, l, pos, max_seq, kv_dim), k,
            kv_dim * sizeof(float));
@@ -204,23 +249,23 @@ int forward(const WeightsConfigJson *cfg, const Weights *w, float *x, float *xn,
     // do the Grouped Query Attention for this pass.
     attention(attn, q, k_base, v_base, pos + 1, head_dim, num_kv_heads,
               num_heads, score);
-    matvec(xn, layer->wo, attn, hidden, hidden);
+    matvec(xn, &layer->wo, attn);
     add(x, xn, hidden);
 
     // MLP forward pass
     rmsnorm(xn, x, layer->rms_ffn, hidden, eps);
-    matvec(hb, layer->w_gate, xn, intermediate, hidden);
-    matvec(hb2, layer->w_up, xn, intermediate, hidden);
+    matvec(hb, &layer->w_gate, xn);
+    matvec(hb2, &layer->w_up, xn);
     silu(hb, intermediate);
     for (int i = 0; i < intermediate; i++) {
       hb[i] *= hb2[i];
     }
-    matvec(xn, layer->w_down, hb, hidden, intermediate);
+    matvec(xn, &layer->w_down, hb);
     add(x, xn, hidden);
   }
 
   rmsnorm(xn, x, w->rms_final, hidden, eps);
-  matvec(logits, w->token_emb, xn, vocab, hidden);
+  matvec(logits, &w->token_emb, xn);
   int best = 0;
   for (int i = 1; i < vocab; i++) {
     if (logits[i] > logits[best])
@@ -274,18 +319,24 @@ int sample_top_p(float *logits, int vocab, float p, float temp, Prob *ps) {
   return id;
 }
 
-void matmul(float *Y, float *W, const float *X, int n, int out, int in) {
-  if (n <= 0 || out <= 0 || in <= 0)
+void matmul(float *Y, const Weight *W, const float *X, int n) {
+  if (n <= 0 || W->rows <= 0 || W->cols <= 0)
     return;
-  cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n, out, in, 1.0f, X, in,
-              W, in, 0.0f, Y, out);
+  if (W->type == WT_F32) {
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n, W->rows, W->cols,
+                1.0f, X, W->cols, W->data.f32, W->cols, 0.0f, Y, W->rows);
+    return;
+  }
+  if (W->type == WT_Q4_K)
+    matmul_q4_k(Y, W->data.q4_k, X, n, W->rows, W->cols);
+  if (W->type == WT_Q6_K)
+    matmul_q6_k(Y, W->data.q6_k, X, n, W->rows, W->cols);
 }
 
-void lookup_batch(float *X, float *token_emb, const int *tokens, int n,
-                  int hidden) {
+void lookup_batch(float *X, const Weight *token_emb, const int *tokens, int n) {
+  int hidden = token_emb->cols;
   for (int t = 0; t < n; t++) {
-    memcpy(X + (size_t)t * hidden, token_emb + (size_t)tokens[t] * hidden,
-           (size_t)hidden * sizeof(float));
+    weight_lookup_row(X + (size_t)t * hidden, token_emb, tokens[t]);
   }
 }
 
@@ -328,25 +379,25 @@ int forward_prefill(const WeightsConfigJson *cfg, const Weights *w, float *x,
   int vocab = cfg->vocab_size;
   float rope_theta = cfg->rope_theta;
 
-  lookup_batch(x, w->token_emb, tokens, n, hidden);
+  lookup_batch(x, &w->token_emb, tokens, n);
 
   for (int l = 0; l < num_layers; l++) {
     const Layer *layer = &w->layers[l];
     rmsnorm_batch(xn, x, layer->rms_att, n, hidden, eps);
 
     // for attention mechanism calculate q @ Wq, k @ Wk, v @ Wv
-    matmul(q, layer->wq, xn, n, hidden, hidden);
-    matmul(k, layer->wk, xn, n, kv_dim, hidden);
-    matmul(v, layer->wv, xn, n, kv_dim, hidden);
+    matmul(q, &layer->wq, xn, n);
+    matmul(k, &layer->wk, xn, n);
+    matmul(v, &layer->wv, xn, n);
 
     for (int t = 0; t < n; t++) {
       for (int h = 0; h < num_heads; h++)
-        rope_rotation(q + (size_t)t * hidden + h * head_dim, t, head_dim,
-                      rope_theta, scale, low, high, orig);
+        apply_rope(q + (size_t)t * hidden + h * head_dim, t, head_dim,
+                   rope_theta, scale, low, high, orig, w->qk_interleaved);
 
       for (int h = 0; h < num_kv_heads; h++)
-        rope_rotation(k + (size_t)t * kv_dim + h * head_dim, t, head_dim,
-                      rope_theta, scale, low, high, orig);
+        apply_rope(k + (size_t)t * kv_dim + h * head_dim, t, head_dim,
+                   rope_theta, scale, low, high, orig, w->qk_interleaved);
 
       memcpy(cache_slot(k_cache, l, t, max_seq, kv_dim), k + (size_t)t * kv_dim,
              kv_dim * sizeof(float));
@@ -362,13 +413,13 @@ int forward_prefill(const WeightsConfigJson *cfg, const Weights *w, float *x,
       attention(attn + (size_t)t * hidden, q + (size_t)t * hidden, k_base,
                 v_base, t + 1, head_dim, num_kv_heads, num_heads, score);
     }
-    matmul(xn, layer->wo, attn, n, hidden, hidden);
+    matmul(xn, &layer->wo, attn, n);
     add_batch(x, xn, n, hidden);
 
     // MLP forward pass
     rmsnorm_batch(xn, x, layer->rms_ffn, n, hidden, eps);
-    matmul(hb, layer->w_gate, xn, n, intermediate, hidden);
-    matmul(hb2, layer->w_up, xn, n, intermediate, hidden);
+    matmul(hb, &layer->w_gate, xn, n);
+    matmul(hb2, &layer->w_up, xn, n);
     silu_batch(hb, n, intermediate);
     for (int t = 0; t < n; t++) {
       float *hb_base = hb + (size_t)t * intermediate;
@@ -377,13 +428,13 @@ int forward_prefill(const WeightsConfigJson *cfg, const Weights *w, float *x,
         hb_base[i] *= hb2_base[i];
       }
     }
-    matmul(xn, layer->w_down, hb, n, hidden, intermediate);
+    matmul(xn, &layer->w_down, hb, n);
     add_batch(x, xn, n, hidden);
   }
 
   rmsnorm(xn + (size_t)(n - 1) * hidden, x + (size_t)(n - 1) * hidden,
           w->rms_final, hidden, eps);
-  matvec(logits, w->token_emb, xn + (size_t)(n - 1) * hidden, vocab, hidden);
+  matvec(logits, &w->token_emb, xn + (size_t)(n - 1) * hidden);
   int best = 0;
   for (int i = 1; i < vocab; i++) {
     if (logits[i] > logits[best])
