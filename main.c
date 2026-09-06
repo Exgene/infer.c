@@ -111,30 +111,42 @@ int main(int argc, char *argv[]) {
 
   // we don't really need the metadat about the ST anymore
   safetensors_close(&st);
+  double load_sec = prof_elapsed(t_load, prof_now());
+
   const int max_seq = 128;
 
   float *logits = malloc(config.vocab_size * sizeof(float));
 
-  float *x = malloc(config.hidden_size * sizeof(float));
-  float *xn = malloc(config.hidden_size * sizeof(float));
+  float *x = malloc(config.hidden_size * sizeof(float) * max_seq);
+  float *xn = malloc(config.hidden_size * sizeof(float) * max_seq);
 
-  float *q = malloc(config.hidden_size * sizeof(float));
-  float *k = malloc(config.num_kv_heads * config.head_dim * sizeof(float));
-  float *v = malloc(config.num_kv_heads * config.head_dim * sizeof(float));
-  float *attn = malloc(config.hidden_size * sizeof(float));
+  float *q = malloc(config.hidden_size * sizeof(float) * max_seq);
+  float *k =
+      malloc(config.num_kv_heads * config.head_dim * sizeof(float) * max_seq);
+  float *v =
+      malloc(config.num_kv_heads * config.head_dim * sizeof(float) * max_seq);
+  float *attn = malloc(config.hidden_size * sizeof(float) * max_seq);
 
-  float *hb = malloc(config.intermediate_size * sizeof(float));
-  float *hb2 = malloc(config.intermediate_size * sizeof(float));
+  float *hb = malloc(config.intermediate_size * sizeof(float) * max_seq);
+  float *hb2 = malloc(config.intermediate_size * sizeof(float) * max_seq);
   float *score = malloc(sizeof(float) * max_seq);
 
   int kv_dim = config.num_kv_heads * config.head_dim;
-  float *k_cache =
-      malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
-  float *v_cache =
-      malloc((size_t)config.num_layers * max_seq * kv_dim * sizeof(float));
+  size_t kv_cache_bytes =
+      (size_t)config.num_layers * max_seq * kv_dim * sizeof(float);
+  float *k_cache = malloc(kv_cache_bytes);
+  float *v_cache = malloc(kv_cache_bytes);
 
   int *tokens = malloc(sizeof(int) * max_seq);
-  const char *user = "Do you like ice cream?";
+  Prob *ps = malloc((size_t)config.vocab_size * sizeof(Prob));
+
+  if (!logits || !x || !xn || !q || !k || !v || !attn || !hb || !hb2 ||
+      !score || !k_cache || !v_cache || !tokens || !ps) {
+    return EXIT_FAILURE;
+  }
+
+  const char *user = benchmark ? "Write a short story about a robot."
+                               : "Do you like ice cream?";
   char prompt[4096];
 
   // I can parse the tokenizer-config.json to get the template. but idw waste

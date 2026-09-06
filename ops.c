@@ -286,3 +286,129 @@ int sample_top_p(float *logits, int vocab, float p, float temp, Prob *ps) {
   }
   return id;
 }
+
+void matmul(float *Y, float *W, const float *X, int n, int out, int in) {
+#pragma omp parallel for
+  for (int t = 0; t < n; t++) {
+    const float *xt = X + (size_t)t * in;
+    float *yt = Y + (size_t)t * out;
+    for (int o = 0; o < out; o++) {
+      const float *wo = W + (size_t)o * in;
+      float sum = 0.0f;
+      for (int j = 0; j < in; j++)
+        sum += wo[j] * xt[j];
+      yt[o] = sum;
+    }
+  }
+}
+
+void lookup_batch(float *X, float *token_emb, const int *tokens, int n,
+                  int hidden) {
+  for (int t = 0; t < n; t++) {
+    memcpy(X + (size_t)t * hidden, token_emb + (size_t)tokens[t] * hidden,
+           (size_t)hidden * sizeof(float));
+  }
+}
+
+void rmsnorm_batch(float *Xn, const float *X, float *weight, int n_rows,
+                   int hidden, float eps) {
+  for (int t = 0; t < n_rows; t++) {
+    rmsnorm(Xn + (size_t)t * hidden, X + (size_t)t * hidden, weight, hidden,
+            eps);
+  }
+}
+
+void add_batch(float *X, const float *branch, int n_rows, int len) {
+  for (int t = 0; t < n_rows; t++) {
+    add(X + (size_t)t * len, branch + (size_t)t * len, len);
+  }
+}
+
+void silu_batch(float *X, int n_rows, int len) {
+  for (int t = 0; t < n_rows; t++) {
+    silu(X + len * (size_t)t, len);
+  }
+}
+
+// Call it for prefill only, batched operation over tokens.
+int forward_prefill(const WeightsConfigJson *cfg, const Weights *w, float *x,
+                    float *xn, float *q, float *k, float *v, float *attn,
+                    float *hb, float *hb2, float *logits, const int *tokens,
+                    int n, float *k_cache, float *v_cache, int max_seq,
+                    float scale, float low, float high, int orig,
+                    float *score) {
+  // to avoid pointer inderection take once and use multiple times!
+  int hidden = cfg->hidden_size;
+  int num_layers = cfg->num_layers;
+  int head_dim = cfg->head_dim;
+  int num_kv_heads = cfg->num_kv_heads;
+  int kv_dim = head_dim * num_kv_heads;
+  float eps = cfg->rms_norm_eps;
+  int num_heads = cfg->num_heads;
+  int intermediate = cfg->intermediate_size;
+  int vocab = cfg->vocab_size;
+  float rope_theta = cfg->rope_theta;
+
+  lookup_batch(x, w->token_emb, tokens, n, hidden);
+
+  for (int l = 0; l < num_layers; l++) {
+    const Layer *layer = &w->layers[l];
+    rmsnorm_batch(xn, x, layer->rms_att, n, hidden, eps);
+
+    // for attention mechanism calculate q @ Wq, k @ Wk, v @ Wv
+    matmul(q, layer->wq, xn, n, hidden, hidden);
+    matmul(k, layer->wk, xn, n, kv_dim, hidden);
+    matmul(v, layer->wv, xn, n, kv_dim, hidden);
+
+    for (int t = 0; t < n; t++) {
+      for (int h = 0; h < num_heads; h++)
+        rope_rotation(q + (size_t)t * hidden + h * head_dim, t, head_dim,
+                      rope_theta, scale, low, high, orig);
+
+      for (int h = 0; h < num_kv_heads; h++)
+        rope_rotation(k + (size_t)t * kv_dim + h * head_dim, t, head_dim,
+                      rope_theta, scale, low, high, orig);
+
+      memcpy(cache_slot(k_cache, l, t, max_seq, kv_dim), k + (size_t)t * kv_dim,
+             kv_dim * sizeof(float));
+      memcpy(cache_slot(v_cache, l, t, max_seq, kv_dim), v + (size_t)t * kv_dim,
+             kv_dim * sizeof(float));
+    }
+
+    float *k_base = cache_layer(k_cache, l, max_seq, kv_dim);
+    float *v_base = cache_layer(v_cache, l, max_seq, kv_dim);
+
+    // do the Grouped Query Attention for this pass.
+    for (int t = 0; t < n; t++) {
+      attention(attn + (size_t)t * hidden, q + (size_t)t * hidden, k_base,
+                v_base, t + 1, head_dim, num_kv_heads, num_heads, score);
+    }
+    matmul(xn, layer->wo, attn, n, hidden, hidden);
+    add_batch(x, xn, n, hidden);
+
+    // MLP forward pass
+    rmsnorm_batch(xn, x, layer->rms_ffn, n, hidden, eps);
+    matmul(hb, layer->w_gate, xn, n, intermediate, hidden);
+    matmul(hb2, layer->w_up, xn, n, intermediate, hidden);
+    silu_batch(hb, n, intermediate);
+    for (int t = 0; t < n; t++) {
+      float *hb_base = hb + (size_t)t * intermediate;
+      float *hb2_base = hb2 + (size_t)t * intermediate;
+      for (int i = 0; i < intermediate; i++) {
+        hb_base[i] *= hb2_base[i];
+      }
+    }
+    matmul(xn, layer->w_down, hb, n, hidden, intermediate);
+    add_batch(x, xn, n, hidden);
+  }
+
+  rmsnorm(xn + (size_t)(n - 1) * hidden, x + (size_t)(n - 1) * hidden,
+          w->rms_final, hidden, eps);
+  matvec(logits, w->token_emb, xn + (size_t)(n - 1) * hidden, vocab, hidden);
+  int best = 0;
+  for (int i = 1; i < vocab; i++) {
+    if (logits[i] > logits[best])
+      best = i;
+  }
+  return best;
+}
