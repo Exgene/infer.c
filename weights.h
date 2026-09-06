@@ -2,30 +2,28 @@
 #define WEIGHTS_H
 
 #include "config.h"
-#include "safetensors.h"
+#include "weight.h"
 #include <stdint.h>
 
 typedef struct {
   float *rms_att;
-  float *wq;
-  float *wk;
-  float *wv;
-  float *wo;
   float *rms_ffn;
-  float *w_gate;
-  float *w_up;
-  float *w_down;
+  Weight wq;
+  Weight wk;
+  Weight wv;
+  Weight wo;
+  Weight w_gate;
+  Weight w_up;
+  Weight w_down;
 } Layer;
 
 typedef struct {
-  float *token_emb;
+  Weight token_emb;
   Layer layers[16];
   float *rms_final;
+  void *backing;
+  int qk_interleaved;
 } Weights;
-
-int bind_weights(const SafeTensors *, const WeightsConfigJson *, Weights *);
-
-float *convert_tensor(const uint16_t *src, size_t n);
 
 void free_weights(Weights *w, int num_layers);
 
