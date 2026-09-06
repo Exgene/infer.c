@@ -1,5 +1,6 @@
 #include "ops.h"
 #include "config.h"
+#include <cblas.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -288,18 +289,11 @@ int sample_top_p(float *logits, int vocab, float p, float temp, Prob *ps) {
 }
 
 void matmul(float *Y, float *W, const float *X, int n, int out, int in) {
-#pragma omp parallel for
-  for (int t = 0; t < n; t++) {
-    const float *xt = X + (size_t)t * in;
-    float *yt = Y + (size_t)t * out;
-    for (int o = 0; o < out; o++) {
-      const float *wo = W + (size_t)o * in;
-      float sum = 0.0f;
-      for (int j = 0; j < in; j++)
-        sum += wo[j] * xt[j];
-      yt[o] = sum;
-    }
-  }
+  // Y[n, out] = X[n, in] * W[out, in]^T  (prefill only; decode still uses matvec)
+  if (n <= 0 || out <= 0 || in <= 0)
+    return;
+  cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n, out, in, 1.0f, X, in,
+              W, in, 0.0f, Y, out);
 }
 
 void lookup_batch(float *X, float *token_emb, const int *tokens, int n,
