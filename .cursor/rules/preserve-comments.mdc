@@ -1,0 +1,11 @@
+---
+description: Never delete or rewrite the user's comments; never add new comments
+alwaysApply: true
+---
+
+# Comments
+
+- Do not remove, rewrite, relocate, or shorten comments that are already in the code.
+- Do not add new comments (including `//`, `/* */`, and comments in `build.sh`).
+- If you move a function, take its existing comments with it, word for word.
+- Explain changes in the chat, not in the source.

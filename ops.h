@@ -4,13 +4,26 @@
 #include "config.h"
 #include "weights.h"
 #include <stdint.h>
+#include <string.h>
 
 typedef struct {
   float p;
   int id;
 } Prob;
 
-float bf16_to_float32(uint16_t in);
+static inline float bf16_to_float32(uint16_t in) {
+  // cool trick, you cast it to 32 bit to get
+  // 0...0 (16bits) 1..0 (existing bits from in)
+  // then when you do << 16 we add 16 0s at the right so we get
+  // 1..0(existing bits from in) 0..0 (16 bits of 0) => this is the same format
+  // for float!!!! where first bit is signed (same for BF16), first 8 bits are
+  // the scaling bits (same for BF16) and finally rest is all mantissa which is
+  // also the same for BF16 (trailing 0s don't make a difference)
+  uint32_t t = ((uint32_t)in) << 16;
+  float out;
+  memcpy(&out, &t, sizeof(out));
+  return out;
+}
 
 void lookup(float *x, float *token_emb, int token_id, int hidden);
 

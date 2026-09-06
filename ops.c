@@ -11,20 +11,6 @@
 #include <omp.h>
 #endif
 
-float bf16_to_float32(uint16_t in) {
-  // cool trick, you cast it to 32 bit to get
-  // 0...0 (16bits) 1..0 (existing bits from in)
-  // then when you do << 16 we add 16 0s at the right so we get
-  // 1..0(existing bits from in) 0..0 (16 bits of 0) => this is the same format
-  // for float!!!! where first bit is signed (same for BF16), first 8 bits are
-  // the scaling bits (same for BF16) and finally rest is all mantissa which is
-  // also the same for BF16 (trailing 0s don't make a difference)
-  uint32_t t = ((uint32_t)in) << 16;
-  float out;
-  memcpy(&out, &t, sizeof(out));
-  return out;
-}
-
 static float llama3_freq(float freq, float scale, float low, float high,
                          int orig) {
   float wavelen = 6.283185307f / freq;
@@ -289,7 +275,6 @@ int sample_top_p(float *logits, int vocab, float p, float temp, Prob *ps) {
 }
 
 void matmul(float *Y, float *W, const float *X, int n, int out, int in) {
-  // Y[n, out] = X[n, in] * W[out, in]^T  (prefill only; decode still uses matvec)
   if (n <= 0 || out <= 0 || in <= 0)
     return;
   cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n, out, in, 1.0f, X, in,
