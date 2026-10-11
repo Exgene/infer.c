@@ -56,7 +56,37 @@ static int prof_thread_count(void) {
 #endif
 }
 
+// Physical cores, not SMT threads: count each CPU that is the first sibling of
+// its core. Returns 0 if the topology can't be read.
+static int physical_core_count(void) {
+  int count = 0;
+  for (int cpu = 0;; cpu++) {
+    char path[128];
+    snprintf(path, sizeof(path),
+             "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list",
+             cpu);
+    FILE *f = fopen(path, "r");
+    if (!f)
+      break;
+    int first = -1;
+    if (fscanf(f, "%d", &first) == 1 && first == cpu)
+      count++;
+    fclose(f);
+  }
+  return count;
+}
+
 int main(int argc, char *argv[]) {
+#ifdef _OPENMP
+  // SMT siblings only add barrier spinning, so default to one thread per core
+  // unless the user asked for something specific.
+  if (!getenv("OMP_NUM_THREADS")) {
+    int cores = physical_core_count();
+    if (cores > 0)
+      omp_set_num_threads(cores);
+  }
+#endif
+
   int benchmark = arg_has_flag(argc, argv, "--benchmark");
   int profile = benchmark || arg_has_flag(argc, argv, "--profile");
   int gen_tokens = arg_get_int(argc, argv, "-n", 128);

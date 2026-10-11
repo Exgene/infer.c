@@ -1,5 +1,9 @@
 #include "q4.h"
 
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -14,6 +18,114 @@ static inline void get_scale_min_k4(int j, const uint8_t *q, uint8_t *d,
     *m = (q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4);
   }
 }
+
+#ifdef __AVX2__
+static inline float horizontal_sum(__m256 v) {
+  __m128 low = _mm256_castps256_ps128(v);
+  __m128 high = _mm256_extractf128_ps(v, 1);
+  __m128 sum = _mm_add_ps(low, high);
+  sum = _mm_hadd_ps(sum, sum);
+  sum = _mm_hadd_ps(sum, sum);
+  return _mm_cvtss_f32(sum);
+}
+
+static inline float dot_q4_k_block(const BlockQ4_K *block, const float *x) {
+  float d = fp16_to_fp32(block->d);
+  float dmin = fp16_to_fp32(block->dmin);
+  const uint8_t *q = block->qs;
+  __m256 sum = _mm256_setzero_ps();
+  int is = 0;
+
+  for (int j = 0; j < QK_K; j += 64) {
+    uint8_t sc, m;
+    get_scale_min_k4(is + 0, block->scales, &sc, &m);
+    __m256 d1 = _mm256_set1_ps(d * sc);
+    __m256 m1 = _mm256_set1_ps(dmin * m);
+    get_scale_min_k4(is + 1, block->scales, &sc, &m);
+    __m256 d2 = _mm256_set1_ps(d * sc);
+    __m256 m2 = _mm256_set1_ps(dmin * m);
+
+    for (int l = 0; l < 32; l += 8) {
+      __m128i bytes = _mm_loadl_epi64((const __m128i *)(q + l));
+      __m256i values = _mm256_cvtepu8_epi32(bytes);
+      __m256 low = _mm256_cvtepi32_ps(
+          _mm256_and_si256(values, _mm256_set1_epi32(0xF)));
+      __m256 high =
+          _mm256_cvtepi32_ps(_mm256_srli_epi32(values, 4));
+      __m256 w1 = _mm256_sub_ps(_mm256_mul_ps(low, d1), m1);
+      __m256 w2 = _mm256_sub_ps(_mm256_mul_ps(high, d2), m2);
+      sum = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + j + l), sum);
+      sum = _mm256_fmadd_ps(w2, _mm256_loadu_ps(x + j + l + 32), sum);
+    }
+    q += 32;
+    is += 2;
+  }
+
+  return horizontal_sum(sum);
+}
+
+static inline float dot_q6_k_block(const BlockQ6_K *block, const float *x) {
+  float d = fp16_to_fp32(block->d);
+  const uint8_t *ql = block->ql;
+  const uint8_t *qh = block->qh;
+  const int8_t *sc = block->scales;
+  const __m256i mask3 = _mm256_set1_epi32(3);
+  const __m256i mask15 = _mm256_set1_epi32(0xF);
+  const __m256i bias = _mm256_set1_epi32(32);
+  __m256 sum = _mm256_setzero_ps();
+
+  for (int n = 0; n < QK_K; n += 128) {
+    for (int l = 0; l < 32; l += 8) {
+      int is = l / 16;
+      __m256i lo1 = _mm256_cvtepu8_epi32(
+          _mm_loadl_epi64((const __m128i *)(ql + l)));
+      __m256i lo2 = _mm256_cvtepu8_epi32(
+          _mm_loadl_epi64((const __m128i *)(ql + l + 32)));
+      __m256i hi = _mm256_cvtepu8_epi32(
+          _mm_loadl_epi64((const __m128i *)(qh + l)));
+
+      __m256i q1 = _mm256_or_si256(
+          _mm256_and_si256(lo1, mask15),
+          _mm256_slli_epi32(_mm256_and_si256(hi, mask3), 4));
+      __m256i q2 = _mm256_or_si256(
+          _mm256_and_si256(lo2, mask15),
+          _mm256_slli_epi32(
+              _mm256_and_si256(_mm256_srli_epi32(hi, 2), mask3), 4));
+      __m256i q3 = _mm256_or_si256(
+          _mm256_srli_epi32(lo1, 4),
+          _mm256_slli_epi32(
+              _mm256_and_si256(_mm256_srli_epi32(hi, 4), mask3), 4));
+      __m256i q4 = _mm256_or_si256(
+          _mm256_srli_epi32(lo2, 4),
+          _mm256_slli_epi32(
+              _mm256_and_si256(_mm256_srli_epi32(hi, 6), mask3), 4));
+
+      __m256 w1 = _mm256_mul_ps(
+          _mm256_cvtepi32_ps(_mm256_sub_epi32(q1, bias)),
+          _mm256_set1_ps(d * sc[is + 0]));
+      __m256 w2 = _mm256_mul_ps(
+          _mm256_cvtepi32_ps(_mm256_sub_epi32(q2, bias)),
+          _mm256_set1_ps(d * sc[is + 2]));
+      __m256 w3 = _mm256_mul_ps(
+          _mm256_cvtepi32_ps(_mm256_sub_epi32(q3, bias)),
+          _mm256_set1_ps(d * sc[is + 4]));
+      __m256 w4 = _mm256_mul_ps(
+          _mm256_cvtepi32_ps(_mm256_sub_epi32(q4, bias)),
+          _mm256_set1_ps(d * sc[is + 6]));
+
+      sum = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + n + l), sum);
+      sum = _mm256_fmadd_ps(w2, _mm256_loadu_ps(x + n + l + 32), sum);
+      sum = _mm256_fmadd_ps(w3, _mm256_loadu_ps(x + n + l + 64), sum);
+      sum = _mm256_fmadd_ps(w4, _mm256_loadu_ps(x + n + l + 96), sum);
+    }
+    ql += 64;
+    qh += 32;
+    sc += 8;
+  }
+
+  return horizontal_sum(sum);
+}
+#endif
 
 void dequantize_row_q4_k(const BlockQ4_K *blocks, float *y, int k) {
   int nb = k / QK_K;
@@ -84,6 +196,9 @@ void matvec_q4_k(float *y, const BlockQ4_K *blocks, const float *x, int out,
     const BlockQ4_K *row = blocks + (size_t)i * blocks_per_row;
     float sum = 0.0f;
     for (int b = 0; b < blocks_per_row; b++) {
+#ifdef __AVX2__
+      sum += dot_q4_k_block(&row[b], x + b * QK_K);
+#else
       float d = fp16_to_fp32(row[b].d);
       float dmin = fp16_to_fp32(row[b].dmin);
       const uint8_t *q = row[b].qs;
@@ -104,6 +219,7 @@ void matvec_q4_k(float *y, const BlockQ4_K *blocks, const float *x, int out,
         q += 32;
         is += 2;
       }
+#endif
     }
     y[i] = sum;
   }
@@ -126,6 +242,9 @@ void matvec_q6_k(float *y, const BlockQ6_K *blocks, const float *x, int out,
     const BlockQ6_K *row = blocks + (size_t)i * blocks_per_row;
     float sum = 0.0f;
     for (int b = 0; b < blocks_per_row; b++) {
+#ifdef __AVX2__
+      sum += dot_q6_k_block(&row[b], x + b * QK_K);
+#else
       float d = fp16_to_fp32(row[b].d);
       const uint8_t *ql = row[b].ql;
       const uint8_t *qh = row[b].qh;
@@ -147,6 +266,7 @@ void matvec_q6_k(float *y, const BlockQ6_K *blocks, const float *x, int out,
         qh += 32;
         sc += 8;
       }
+#endif
     }
     y[i] = sum;
   }
