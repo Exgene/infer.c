@@ -1,5 +1,9 @@
 #include "q4.h"
 
+#include <cblas.h>
+#include <stdio.h>
+#include <stdlib.h>
+
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
@@ -144,10 +148,27 @@ void dequantize_row_q4_k(const BlockQ4_K *blocks, float *y, int k) {
       get_scale_min_k4(is + 1, blocks[i].scales, &sc, &m);
       float d2 = d * sc;
       float m2 = min * m;
+#ifdef __AVX2__
+      const __m256i mask15 = _mm256_set1_epi32(0xF);
+      __m256 vd1 = _mm256_set1_ps(d1);
+      __m256 vm1 = _mm256_set1_ps(m1);
+      __m256 vd2 = _mm256_set1_ps(d2);
+      __m256 vm2 = _mm256_set1_ps(m2);
+      for (int l = 0; l < 32; l += 8) {
+        __m256i values =
+            _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(q + l)));
+        __m256 low = _mm256_cvtepi32_ps(_mm256_and_si256(values, mask15));
+        __m256 high = _mm256_cvtepi32_ps(_mm256_srli_epi32(values, 4));
+        _mm256_storeu_ps(y + l, _mm256_fmsub_ps(low, vd1, vm1));
+        _mm256_storeu_ps(y + l + 32, _mm256_fmsub_ps(high, vd2, vm2));
+      }
+      y += 64;
+#else
       for (int l = 0; l < 32; l++)
         *y++ = d1 * (float)(q[l] & 0xF) - m1;
       for (int l = 0; l < 32; l++)
         *y++ = d2 * (float)(q[l] >> 4) - m2;
+#endif
       q += 32;
       is += 2;
     }
@@ -164,6 +185,53 @@ void dequantize_row_q6_k(const BlockQ6_K *blocks, float *y, int k) {
     const int8_t *sc = blocks[i].scales;
 
     for (int n = 0; n < QK_K; n += 128) {
+#ifdef __AVX2__
+      const __m256i mask3 = _mm256_set1_epi32(3);
+      const __m256i mask15 = _mm256_set1_epi32(0xF);
+      const __m256i bias = _mm256_set1_epi32(32);
+      for (int l = 0; l < 32; l += 8) {
+        int is = l / 16;
+        __m256i lo1 = _mm256_cvtepu8_epi32(
+            _mm_loadl_epi64((const __m128i *)(ql + l)));
+        __m256i lo2 = _mm256_cvtepu8_epi32(
+            _mm_loadl_epi64((const __m128i *)(ql + l + 32)));
+        __m256i hi = _mm256_cvtepu8_epi32(
+            _mm_loadl_epi64((const __m128i *)(qh + l)));
+
+        __m256i q1 = _mm256_or_si256(
+            _mm256_and_si256(lo1, mask15),
+            _mm256_slli_epi32(_mm256_and_si256(hi, mask3), 4));
+        __m256i q2 = _mm256_or_si256(
+            _mm256_and_si256(lo2, mask15),
+            _mm256_slli_epi32(
+                _mm256_and_si256(_mm256_srli_epi32(hi, 2), mask3), 4));
+        __m256i q3 = _mm256_or_si256(
+            _mm256_srli_epi32(lo1, 4),
+            _mm256_slli_epi32(
+                _mm256_and_si256(_mm256_srli_epi32(hi, 4), mask3), 4));
+        __m256i q4 = _mm256_or_si256(
+            _mm256_srli_epi32(lo2, 4),
+            _mm256_slli_epi32(
+                _mm256_and_si256(_mm256_srli_epi32(hi, 6), mask3), 4));
+
+        _mm256_storeu_ps(y + l,
+                         _mm256_mul_ps(_mm256_set1_ps(d * sc[is + 0]),
+                                       _mm256_cvtepi32_ps(
+                                           _mm256_sub_epi32(q1, bias))));
+        _mm256_storeu_ps(y + l + 32,
+                         _mm256_mul_ps(_mm256_set1_ps(d * sc[is + 2]),
+                                       _mm256_cvtepi32_ps(
+                                           _mm256_sub_epi32(q2, bias))));
+        _mm256_storeu_ps(y + l + 64,
+                         _mm256_mul_ps(_mm256_set1_ps(d * sc[is + 4]),
+                                       _mm256_cvtepi32_ps(
+                                           _mm256_sub_epi32(q3, bias))));
+        _mm256_storeu_ps(y + l + 96,
+                         _mm256_mul_ps(_mm256_set1_ps(d * sc[is + 6]),
+                                       _mm256_cvtepi32_ps(
+                                           _mm256_sub_epi32(q4, bias))));
+      }
+#else
       for (int l = 0; l < 32; l++) {
         int is = l / 16;
         int8_t q1 =
@@ -179,6 +247,7 @@ void dequantize_row_q6_k(const BlockQ6_K *blocks, float *y, int k) {
         y[l + 64] = d * sc[is + 4] * q3;
         y[l + 96] = d * sc[is + 6] * q4;
       }
+#endif
       y += 128;
       ql += 64;
       qh += 32;
@@ -225,11 +294,33 @@ void matvec_q4_k(float *y, const BlockQ4_K *blocks, const float *x, int out,
   }
 }
 
+// Batched over tokens: walk the weights once, dequantize a tile of rows into a
+// float buffer and let sgemm multiply it with every token, instead of one full
+// matvec (a full pass over the matrix) per token. 32 rows measured best: larger
+// tiles fall out of cache for wide matrices when all threads are busy.
+#define MATMUL_TILE_ROWS 32
+
 void matmul_q4_k(float *Y, const BlockQ4_K *blocks, const float *X, int n,
                  int out, int in) {
-#pragma omp parallel for
-  for (int t = 0; t < n; t++) {
-    matvec_q4_k(Y + (size_t)t * out, blocks, X + (size_t)t * in, out, in);
+  int blocks_per_row = in / QK_K;
+
+#pragma omp parallel
+  {
+    float *tile = malloc((size_t)MATMUL_TILE_ROWS * in * sizeof(float));
+    if (!tile) {
+      perror("malloc");
+      abort();
+    }
+
+#pragma omp for schedule(static)
+    for (int i0 = 0; i0 < out; i0 += MATMUL_TILE_ROWS) {
+      int rows = out - i0 < MATMUL_TILE_ROWS ? out - i0 : MATMUL_TILE_ROWS;
+      dequantize_row_q4_k(blocks + (size_t)i0 * blocks_per_row, tile, rows * in);
+      cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n, rows, in, 1.0f,
+                  X, in, tile, in, 0.0f, Y + i0, out);
+    }
+
+    free(tile);
   }
 }
 
@@ -274,8 +365,24 @@ void matvec_q6_k(float *y, const BlockQ6_K *blocks, const float *x, int out,
 
 void matmul_q6_k(float *Y, const BlockQ6_K *blocks, const float *X, int n,
                  int out, int in) {
-#pragma omp parallel for
-  for (int t = 0; t < n; t++) {
-    matvec_q6_k(Y + (size_t)t * out, blocks, X + (size_t)t * in, out, in);
+  int blocks_per_row = in / QK_K;
+
+#pragma omp parallel
+  {
+    float *tile = malloc((size_t)MATMUL_TILE_ROWS * in * sizeof(float));
+    if (!tile) {
+      perror("malloc");
+      abort();
+    }
+
+#pragma omp for schedule(static)
+    for (int i0 = 0; i0 < out; i0 += MATMUL_TILE_ROWS) {
+      int rows = out - i0 < MATMUL_TILE_ROWS ? out - i0 : MATMUL_TILE_ROWS;
+      dequantize_row_q6_k(blocks + (size_t)i0 * blocks_per_row, tile, rows * in);
+      cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n, rows, in, 1.0f,
+                  X, in, tile, in, 0.0f, Y + i0, out);
+    }
+
+    free(tile);
   }
 }

@@ -342,6 +342,7 @@ void lookup_batch(float *X, const Weight *token_emb, const int *tokens, int n) {
 
 void rmsnorm_batch(float *Xn, const float *X, float *weight, int n_rows,
                    int hidden, float eps) {
+#pragma omp parallel for
   for (int t = 0; t < n_rows; t++) {
     rmsnorm(Xn + (size_t)t * hidden, X + (size_t)t * hidden, weight, hidden,
             eps);
@@ -355,6 +356,7 @@ void add_batch(float *X, const float *branch, int n_rows, int len) {
 }
 
 void silu_batch(float *X, int n_rows, int len) {
+#pragma omp parallel for
   for (int t = 0; t < n_rows; t++) {
     silu(X + len * (size_t)t, len);
   }
@@ -390,6 +392,7 @@ int forward_prefill(const WeightsConfigJson *cfg, const Weights *w, float *x,
     matmul(k, &layer->wk, xn, n);
     matmul(v, &layer->wv, xn, n);
 
+#pragma omp parallel for
     for (int t = 0; t < n; t++) {
       for (int h = 0; h < num_heads; h++)
         apply_rope(q + (size_t)t * hidden + h * head_dim, t, head_dim,
@@ -409,9 +412,12 @@ int forward_prefill(const WeightsConfigJson *cfg, const Weights *w, float *x,
     float *v_base = cache_layer(v_cache, l, max_seq, kv_dim);
 
     // do the Grouped Query Attention for this pass.
+    // later tokens attend over more positions, so hand them out one at a time
+#pragma omp parallel for schedule(dynamic, 1)
     for (int t = 0; t < n; t++) {
+      float token_score[t + 1];
       attention(attn + (size_t)t * hidden, q + (size_t)t * hidden, k_base,
-                v_base, t + 1, head_dim, num_kv_heads, num_heads, score);
+                v_base, t + 1, head_dim, num_kv_heads, num_heads, token_score);
     }
     matmul(xn, &layer->wo, attn, n);
     add_batch(x, xn, n, hidden);
@@ -421,6 +427,7 @@ int forward_prefill(const WeightsConfigJson *cfg, const Weights *w, float *x,
     matmul(hb, &layer->w_gate, xn, n);
     matmul(hb2, &layer->w_up, xn, n);
     silu_batch(hb, n, intermediate);
+#pragma omp parallel for
     for (int t = 0; t < n; t++) {
       float *hb_base = hb + (size_t)t * intermediate;
       float *hb2_base = hb2 + (size_t)t * intermediate;
