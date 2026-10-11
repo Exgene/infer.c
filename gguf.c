@@ -162,6 +162,16 @@ int gguf_open(const char *path, GgufFile *out) {
     return -1;
   }
 
+  // Touch every page now, on all threads, so the page faults are paid once at
+  // load instead of inside the first forward pass.
+  {
+    const volatile uint8_t *bytes = (const volatile uint8_t *)map;
+    long n_pages = (long)(((size_t)st.st_size + 4095) / 4096);
+#pragma omp parallel for schedule(static)
+    for (long p = 0; p < n_pages; p++)
+      (void)bytes[(size_t)p * 4096];
+  }
+
   GgufReader r = {(const uint8_t *)map,
                   (const uint8_t *)map + (size_t)st.st_size};
 

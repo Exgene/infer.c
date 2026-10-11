@@ -64,7 +64,7 @@ void silu_batch(float *X, int n_rows, int len);
 int forward_prefill(const WeightsConfigJson *cfg, const Weights *w, float *x,
                      float *xn, float *q, float *k, float *v, float *attn,
                      float *hb, float *hb2, float *logits, const int *tokens,
-                     int n, float *k_cache, float *v_cache, int max_seq,
-                     float scale, float low, float high, int orig,
-                     float *score);
+                     int n, int pos0, int need_logits, float *k_cache,
+                     float *v_cache, int max_seq, float scale, float low,
+                     float high, int orig, float *score);
 #endif

@@ -147,21 +147,25 @@ int main(int argc, char *argv[]) {
   double load_sec = prof_elapsed(t_load, prof_now());
 
   const int max_seq = 128;
+  // Prefill runs this many tokens at a time, so the scratch buffers below hold
+  // one chunk instead of the whole context.
+  const int prefill_chunk = 128;
+  const int batch = max_seq < prefill_chunk ? max_seq : prefill_chunk;
 
   float *logits = malloc(config.vocab_size * sizeof(float));
 
-  float *x = malloc(config.hidden_size * sizeof(float) * max_seq);
-  float *xn = malloc(config.hidden_size * sizeof(float) * max_seq);
+  float *x = malloc(config.hidden_size * sizeof(float) * batch);
+  float *xn = malloc(config.hidden_size * sizeof(float) * batch);
 
-  float *q = malloc(config.hidden_size * sizeof(float) * max_seq);
+  float *q = malloc(config.hidden_size * sizeof(float) * batch);
   float *k =
-      malloc(config.num_kv_heads * config.head_dim * sizeof(float) * max_seq);
+      malloc(config.num_kv_heads * config.head_dim * sizeof(float) * batch);
   float *v =
-      malloc(config.num_kv_heads * config.head_dim * sizeof(float) * max_seq);
-  float *attn = malloc(config.hidden_size * sizeof(float) * max_seq);
+      malloc(config.num_kv_heads * config.head_dim * sizeof(float) * batch);
+  float *attn = malloc(config.hidden_size * sizeof(float) * batch);
 
-  float *hb = malloc(config.intermediate_size * sizeof(float) * max_seq);
-  float *hb2 = malloc(config.intermediate_size * sizeof(float) * max_seq);
+  float *hb = malloc(config.intermediate_size * sizeof(float) * batch);
+  float *hb2 = malloc(config.intermediate_size * sizeof(float) * batch);
   float *score = malloc(sizeof(float) * max_seq);
 
   int kv_dim = config.num_kv_heads * config.head_dim;
@@ -217,9 +221,12 @@ int main(int argc, char *argv[]) {
 
   ProfTime t_prefill = prof_now();
 
-  next = forward_prefill(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits,
-                         tokens, n, k_cache, v_cache, max_seq, scale, low, high,
-                         origin, score);
+  for (int pos = 0; pos < n; pos += batch) {
+    int count = n - pos < batch ? n - pos : batch;
+    next = forward_prefill(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits,
+                           tokens + pos, count, pos, pos + count >= n, k_cache,
+                           v_cache, max_seq, scale, low, high, origin, score);
+  }
   // for (int pos = 0; pos < n; pos++) {
   //   next = forward(&config, &w, x, xn, q, k, v, attn, hb, hb2, logits,
   //                  tokens[pos], pos, k_cache, v_cache, max_seq, scale, low,

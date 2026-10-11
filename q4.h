@@ -3,7 +3,14 @@
 
 #include "weight.h"
 
+#ifdef __F16C__
+#include <immintrin.h>
+#endif
+
 static inline float fp16_to_fp32(uint16_t h) {
+#ifdef __F16C__
+  return _cvtsh_ss(h);
+#else
   uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
   uint32_t exp = (h & 0x7C00u) >> 10;
   uint32_t mant = h & 0x03FFu;
@@ -30,6 +37,7 @@ static inline float fp16_to_fp32(uint16_t h) {
   float out;
   __builtin_memcpy(&out, &bits, sizeof(out));
   return out;
+#endif
 }
 
 void dequantize_row_q4_k(const BlockQ4_K *blocks, float *y, int k);
