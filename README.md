@@ -11,3 +11,7 @@ Also can brush up with the Math required for LLMs as well so its a win win situa
 ## Current
 
 Currently implementing a very minimal implementation (for now CPU only and probably very bad) and slow version. Will iterate and improve performance after that.
+
+## Major stuff
+
+1. Implemented multiple set of optimizations from llama.cpp and now we are within 4% of performance of traditional llama models running from llama.cpp!
